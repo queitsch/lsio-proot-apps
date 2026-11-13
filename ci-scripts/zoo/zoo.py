@@ -64,6 +64,10 @@ IMAGES = {
 # outer Selkies compositor). First match wins.
 DE_PROCESS = {"kde": ["plasmashell", "kded6", "xdg-desktop-portal-kde", "kactivitymanagerd"], "xfce": ["xfce4-panel", "xfdesktop"],
               "mate": ["mate-panel", "caja"], "i3": ["swaybar", "i3bar"]}
+# What a user sees as the desktop: without it running the session is unusable,
+# even when the background services above are up (debian-kde + Intel:
+# plasmashell segfaults in Mesa and the screen stays black).
+DE_SHELL = {"kde": ["plasmashell"], "xfce": ["xfce4-panel"], "mate": ["mate-panel"], "i3": ["swaybar", "i3bar"]}
 
 SSH_OPTS = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=15", "-o", "ServerAliveInterval=30",
             "-o", "ControlMaster=auto", "-o", "ControlPath=~/.ssh/cm-zoo-%C", "-o", "ControlPersist=15m"]
@@ -194,6 +198,7 @@ echo shot=$(curl -s -m 10 -o /dev/null -w '%{{http_code}}' http://localhost:8082
                 if state.get("shot") in ("200", "426", "404"):
                     self.no_screenshots = state.get("shot") != "200"
                     time.sleep(8)  # let the desktop settle (wallet daemons, panels)
+                    self.check_desktop(state, min(deadline, time.time() + 90))
                     return state
             if self.r.run(f"docker inspect -f '{{{{.State.Running}}}}' {self.ctr}").stdout.strip() != "true":
                 raise RuntimeError("container exited")
@@ -201,6 +206,32 @@ echo shot=$(curl -s -m 10 -o /dev/null -w '%{{http_code}}' http://localhost:8082
         if state.get("de") != "1":
             raise NoDesktop(f"desktop never came up in {timeout}s: {state}")
         raise RuntimeError(f"not ready after {timeout}s: {state}")
+
+    def check_desktop(self, state: dict, deadline: float) -> None:
+        """The desktop shell is running and has drawn something, else NoDesktop.
+        Records what it found (and any core dumps in /config) in state."""
+        shell = "|".join(DE_SHELL[self.de])
+        while True:
+            p = self.sh(f"pgrep -u abc -x '{shell}' >/dev/null && echo 1 || echo 0", env=False, timeout=30)
+            state["shell"] = p.stdout.strip() == "1"
+            b = self.probe("blank", timeout=40)
+            try:
+                state["screen"] = json.loads(b.stdout.strip().splitlines()[-1])
+            except Exception:
+                state["screen"] = {"error": (b.stdout + b.stderr)[-300:]}
+            if state["shell"] and not state["screen"].get("blank"):
+                return
+            if time.time() > deadline:
+                break
+            time.sleep(5)
+        p = self.sh("for c in /config/core*; do [ -f \"$c\" ] && echo \"$c: $(file -b \"$c\" 2>/dev/null"
+                    " | grep -o \"from '[^']*'\")\"; done", env=False, timeout=30)
+        state["cores"] = p.stdout.split("\n")[:-1]
+        why = [] if state["shell"] else [f"{shell} not running"]
+        if state["screen"].get("blank"):
+            why.append("screen is blank")
+        raise NoDesktop(f"desktop shell broken: {', '.join(why)}"
+                        + (f"; core dumps: {'; '.join(state['cores'])}" if state["cores"] else ""))
 
     def capture_env(self) -> None:
         p = self.probe("capture-env", *DE_PROCESS[self.de])

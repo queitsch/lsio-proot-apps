@@ -4,6 +4,7 @@
     app-pid                 pid of the running app (also saved to /config/.zoo/app.pid)
     bus-state desktop|app   Secret Service facts on that process's session bus, as JSON
     lock-default            lock the default collection on the app's bus
+    blank                   is the screen one flat colour? as JSON
     keys <tok>...           type over the Selkies websocket; <tab> <enter> <esc> are keys
 """
 
@@ -197,6 +198,16 @@ def shot(name):
     print(len(data))
 
 
+def blank():
+    """Is the screen one flat colour (a desktop whose shell never drew)?"""
+    import io
+    from PIL import Image, ImageStat
+    im = Image.open(io.BytesIO(png())).convert("L")
+    colors = len(im.getcolors(1 << 20) or [])
+    sd = ImageStat.Stat(im).stddev[0]
+    print(json.dumps({"colors": colors, "stddev": round(sd, 2), "blank": colors <= 8 or sd < 1}))
+
+
 def dialog_box(before, after):
     """Bounding box of what changed between two screenshots, ignoring the
     top and bottom panels (clocks tick). Prints JSON {x, y, w, h, sw, sh}."""
@@ -317,6 +328,8 @@ def main():
         lock_default()
     elif cmd == "shot":
         shot(args[0])
+    elif cmd == "blank":
+        blank()
     elif cmd == "dialog-box":
         dialog_box(args[0], args[1])
     elif cmd == "keys":
